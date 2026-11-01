@@ -1,18 +1,447 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clean Memory</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nettoyage mémoire</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#f5f5f7; color:#1d1d1f; text-align:center; padding:60px 20px; }
-  h1 { color:#0071e3; }
-  p { color:#86868b; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: #f0f2f5; color: #2c3e50; font-size: 15px; line-height: 1.4;
+        padding: env(safe-area-inset-top, 0px) 0 calc(env(safe-area-inset-bottom, 0px) + 96px) 0;
+        -webkit-text-size-adjust: 100%;
+    }
+    header {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        padding: 14px 14px 10px; background: #2c3e50; color: #fff;
+    }
+    header h1 { margin: 0; font-size: 1.15rem; }
+    #ver {
+        border: 2px solid #f1c40f; background: #f1c40f; color: #2c3e50; font-weight: 800; font-size: 1rem;
+        padding: 6px 12px; border-radius: 18px; cursor: pointer;
+    }
+    main { max-width: 640px; margin: 0 auto; padding: 10px 10px 0; }
+    .carte { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+    #bandeau { border-radius: 12px; padding: 12px; margin-bottom: 10px; font-weight: 700; color: #fff; }
+    #bandeau.ok { background: #27ae60; }
+    #bandeau.ko { background: #c0392b; }
+    #bandeau small { display: block; font-weight: 400; margin-top: 4px; opacity: 0.95; }
+    .jauge { height: 10px; background: #ecf0f1; border-radius: 5px; overflow: hidden; margin: 8px 0 4px; }
+    .jauge span { display: block; height: 100%; background: #e67e22; }
+    .muted { color: #7f8c8d; font-size: 0.8rem; }
+    .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+    .btn {
+        flex: 1 1 auto; border: none; border-radius: 10px; padding: 11px 12px; font-size: 0.9rem; font-weight: 700;
+        color: #fff; background: #3498db; cursor: pointer;
+    }
+    .btn.gris { background: #7f8c8d; }
+    .btn.vert { background: #27ae60; }
+    .btn.rouge { background: #c0392b; }
+    .btn:disabled { background: #bdc3c7; cursor: default; }
+    .legende { font-size: 0.8rem; }
+    .legende div { margin: 2px 0; }
+    .outils { display: flex; gap: 8px; margin-bottom: 8px; }
+    .outils input[type=search], .outils select {
+        flex: 1 1 auto; min-width: 0; padding: 9px; border: 1px solid #ccd1d6; border-radius: 8px; font-size: 16px; background: #fff;
+    }
+    .outils select { flex: 0 0 auto; }
+    .ligne { background: #fff; border-radius: 10px; margin-bottom: 6px; padding: 8px 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); border: 2px solid transparent; }
+    .ligne.sel { border-color: #3498db; background: #f2f9ff; }
+    .ligne .haut { display: flex; align-items: center; gap: 8px; }
+    .ligne input[type=checkbox] { width: 22px; height: 22px; flex: none; }
+    .ligne .info { flex: 1 1 auto; min-width: 0; }
+    .ligne .nom { font-weight: 700; font-size: 0.85rem; overflow-wrap: anywhere; }
+    .ligne .desc { font-size: 0.72rem; color: #7f8c8d; }
+    .ligne .taille { font-size: 0.8rem; white-space: nowrap; text-align: right; font-weight: 700; }
+    .ligne .barre { height: 4px; background: #ecf0f1; border-radius: 2px; margin-top: 4px; }
+    .ligne .barre span { display: block; height: 100%; background: #c0392b; border-radius: 2px; }
+    .ligne .actions { display: flex; gap: 6px; margin-top: 6px; }
+    .ligne .actions button { border: none; border-radius: 7px; padding: 7px 10px; font-size: 0.78rem; font-weight: 700; background: #95a5a6; color: #fff; cursor: pointer; }
+    .ligne .actions button.arme { background: #c0392b; }
+    .ligne pre {
+        margin: 6px 0 0; padding: 8px; background: #f7f9fa; border-radius: 6px; font-size: 0.72rem;
+        white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto;
+    }
+    #barre-action {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; background: #fff; border-top: 1px solid #d5d9dd;
+        padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px); box-shadow: 0 -2px 8px rgba(0,0,0,0.12);
+    }
+    #barre-action .interne { max-width: 640px; margin: 0 auto; }
+    #progression { font-size: 0.82rem; font-weight: 700; color: #2c3e50; min-height: 1.1rem; margin-bottom: 4px; }
+    #journal { font-size: 0.75rem; color: #566573; max-height: 140px; overflow-y: auto; white-space: pre-wrap; }
+    #histo { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; padding: 14px; }
+    #histo .boite { background: #fff; border-radius: 12px; width: 100%; max-width: 520px; max-height: 85vh; max-height: 85dvh; display: flex; flex-direction: column; overflow: hidden; }
+    #histo h2 { margin: 0; padding: 14px; font-size: 1.05rem; }
+    #histo .liste { overflow-y: auto; padding: 0 14px 10px; }
+    #histo .version { border: 1px solid #d5d9dd; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+    #histo .version b { color: #2980b9; }
+    #histo .btn { margin: 0 14px 14px; flex: none; }
 </style>
 </head>
 <body>
-<h1>Clean Memory</h1>
-<p>Nouvelle application créée avec Le Déployeur.</p>
-<p>Déploie ton code depuis l'étape 3 pour remplacer cette page.</p>
+<header>
+    <h1>🧹 Nettoyage mémoire</h1>
+    <button id="ver" onclick="ouvrirHistorique()" title="Historique des versions"></button>
+</header>
+
+<main>
+    <div id="bandeau" class="ok"></div>
+
+    <div class="carte">
+        <div id="resume"></div>
+        <div class="jauge" id="jauge" style="display:none;"><span id="jauge-rempli"></span></div>
+        <div class="muted" id="contexte"></div>
+        <div class="btns" style="margin-top:10px;">
+            <button class="btn" onclick="actualiser()">🔄 Actualiser</button>
+            <button class="btn gris" onclick="mesurerLibre()" id="btn-mesure">📏 Mesurer la place libre</button>
+        </div>
+    </div>
+
+    <div class="carte legende">
+        <div><b>Légende</b></div>
+        <div>🟢 journal ou cache : sans risque</div>
+        <div>🟠 copie locale d'une page HTML (ex. apps de la Passerelle) : se recrée à l'ouverture de l'app</div>
+        <div>⚪ données d'une app : à vérifier avant de vider</div>
+        <div>🔴 progression, jeton ou clé : à garder (leur perte oblige à tout ressaisir)</div>
+        <div class="btns" style="margin-top:8px;">
+            <button class="btn vert" onclick="cocherNiveau('sur')">Cocher les 🟢</button>
+            <button class="btn" style="background:#e67e22;" onclick="cocherNiveau('copie')">Cocher les 🟠</button>
+            <button class="btn gris" onclick="toutDecocher()">Tout décocher</button>
+        </div>
+    </div>
+
+    <div class="outils">
+        <input type="search" id="filtre" placeholder="Filtrer par nom…" oninput="rendreListe()">
+        <select id="tri" onchange="rendreListe()">
+            <option value="taille">Taille ↓</option>
+            <option value="nom">Nom A→Z</option>
+        </select>
+    </div>
+
+    <div id="liste"></div>
+
+    <div class="carte" style="margin-top:10px;">
+        <div class="muted" style="margin-bottom:4px;"><b>Journal de la session</b> (non conservé : la mémoire peut être pleine)</div>
+        <div id="journal">(aucune action pour l'instant)</div>
+    </div>
+</main>
+
+<div id="barre-action">
+    <div class="interne">
+        <div id="progression"></div>
+        <button class="btn rouge" id="btn-vider" style="width:100%;" onclick="viderSelection()" disabled>Vider la sélection</button>
+    </div>
+</div>
+
+<div id="histo" onclick="if(event.target===this) fermerHistorique()">
+    <div class="boite">
+        <h2>🕘 Historique des versions</h2>
+        <div class="liste" id="histo-liste"></div>
+        <button class="btn gris" onclick="fermerHistorique()">Fermer</button>
+    </div>
+</div>
+
+<script>
+const APP_VERSION = '1.0.0';
+const HISTORIQUE = [
+    { v: '1.0.0', d: "Création : inventaire de la mémoire locale (localStorage) partagée avec la Passerelle, classement par niveau de risque, aperçu des valeurs, vidage à l'unité ou par sélection avec décompte de progression, bandeau d'état (test d'écriture) et mesure de la place libre." }
+];
+
+// ---------- Connaissances sur les clés ----------
+const CLES_SURES = ['gist_ops_log', 'vocab_journal_ia', 'gemini_quota_usage', 'vocab_modeles_gemini', 'vocab_delais_gemini'];
+const CLES_VITALES = ['vocab_counters', 'vocab_current_section', 'vocab_section_changed_at'];
+const CLE_TEST = '__nettoyage_test_ecriture';
+const CLE_MESURE = '__nettoyage_mesure';
+
+let lignes = [];            // [{k, t, len, debut, apercu}]
+let total = 0;
+let selection = new Set();
+let apercus = new Set();    // clés dont l'aperçu est déplié
+let cleArmee = null;        // clé en attente de confirmation (vidage individuel)
+let timerArme = null;
+let lotArme = false;        // vidage de la sélection en attente de confirmation
+let timerLot = null;
+let occupe = false;
+let libreOctets = null;     // résultat de la mesure de place libre
+const journalSession = [];
+
+function el(tag, cls, txt) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt !== undefined) e.textContent = txt;
+    return e;
+}
+
+function journaliser(msg) {
+    const h = new Date().toLocaleTimeString('fr-FR');
+    journalSession.push(`${h}  ${msg}`);
+    const j = document.getElementById('journal');
+    j.textContent = journalSession.slice(-15).join('\n');
+    j.scrollTop = j.scrollHeight;
+}
+
+function tick() { return new Promise(r => setTimeout(r, 0)); }
+
+function ko(octets) {
+    return octets >= 10240 ? `${Math.round(octets / 1024)} Ko` : `${(octets / 1024).toFixed(1)} Ko`;
+}
+
+function majProgression(txt) { document.getElementById('progression').textContent = txt || ''; }
+
+// ---------- Lecture / classement ----------
+function lire() {
+    const res = [];
+    let tot = 0;
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            let v = '';
+            try { v = localStorage.getItem(k) || ''; } catch (e) { /* rien */ }
+            const t = (k.length + v.length) * 2;
+            tot += t;
+            res.push({ k, t, len: v.length, debut: v.slice(0, 40).trim(), apercu: v.slice(0, 400) });
+        }
+    } catch (e) { journaliser('Lecture du stockage impossible : ' + e.message); }
+    lignes = res;
+    total = tot;
+}
+
+function classer(l) {
+    const k = l.k;
+    if (CLES_SURES.includes(k)) return { niv: 'sur', p: '🟢', txt: 'journal ou cache connu — sans risque' };
+    if (CLES_VITALES.includes(k) || /token|secret|passw|api[_-]?key|apikey|config|credential|jeton|github/i.test(k))
+        return { niv: 'vital', p: '🔴', txt: 'progression, jeton ou clé — à garder' };
+    if (/^(<!doctype|<html)/i.test(l.debut))
+        return { niv: 'copie', p: '🟠', txt: "copie locale d'une page HTML — se recrée à l'ouverture de l'app" };
+    if (/(^|[_\-.:])(log|logs|journal|cache|quota|tmp|temp|history|historique)([_\-.:]|$)/i.test(k))
+        return { niv: 'sur', p: '🟢', txt: "journal ou cache (d'après son nom)" };
+    return { niv: 'autre', p: '⚪', txt: "données d'une app — à vérifier avant de vider" };
+}
+
+function testEcriture() {
+    try { localStorage.setItem(CLE_TEST, 'x'.repeat(100000)); localStorage.removeItem(CLE_TEST); return true; }
+    catch (e) { try { localStorage.removeItem(CLE_TEST); } catch (e2) { /* rien */ } return false; }
+}
+
+// ---------- Rendu ----------
+function rendreResume() {
+    const ok = testEcriture();
+    const b = document.getElementById('bandeau');
+    b.className = ok ? 'ok' : 'ko';
+    b.innerHTML = '';
+    b.appendChild(document.createTextNode(ok ? '✅ Mémoire OK : l\'écriture fonctionne.' : '⚠️ Mémoire pleine : le navigateur refuse d\'enregistrer.'));
+    const s = document.createElement('small');
+    s.textContent = ok ? 'Tu peux tout de même faire le ménage pour garder de la marge.'
+                       : 'Vide d\'abord les lignes 🟢, puis les plus grosses lignes 🟠 / ⚪, jusqu\'à ce que ce bandeau passe au vert.';
+    b.appendChild(s);
+
+    document.getElementById('resume').innerHTML = '';
+    const r = document.getElementById('resume');
+    r.appendChild(el('div', '', `${lignes.length} entrée(s) — environ ${ko(total)} utilisés`));
+    const jauge = document.getElementById('jauge');
+    if (libreOctets !== null) {
+        const cap = total + libreOctets;
+        r.appendChild(el('div', 'muted', `Place libre mesurée : ≈ ${ko(libreOctets)} (capacité ≈ ${ko(cap)})`));
+        jauge.style.display = 'block';
+        document.getElementById('jauge-rempli').style.width = Math.min(100, Math.round(100 * total / (cap || 1))) + '%';
+    } else {
+        jauge.style.display = 'none';
+    }
+    let ctx = '';
+    try { ctx = (window.self !== window.top) ? 'Lancée dans la Passerelle (mémoire partagée avec les autres apps).' : 'Page autonome (mémoire de ce site).'; }
+    catch (e) { ctx = 'Lancée dans un cadre (mémoire partagée).'; }
+    document.getElementById('contexte').textContent = ctx;
+}
+
+function rendreListe() {
+    const zone = document.getElementById('liste');
+    zone.innerHTML = '';
+    const filtre = document.getElementById('filtre').value.trim().toLowerCase();
+    const tri = document.getElementById('tri').value;
+    let affichees = lignes.filter(l => !filtre || l.k.toLowerCase().includes(filtre));
+    affichees = [...affichees].sort((a, b) => tri === 'nom' ? a.k.localeCompare(b.k) : b.t - a.t);
+
+    if (!affichees.length) {
+        zone.appendChild(el('div', 'muted', lignes.length ? '(aucune entrée ne correspond au filtre)' : '(le stockage local est vide)'));
+    }
+    affichees.forEach(l => {
+        const c = classer(l);
+        const row = el('div', 'ligne' + (selection.has(l.k) ? ' sel' : ''));
+
+        const haut = el('div', 'haut');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selection.has(l.k);
+        cb.onchange = () => {
+            if (cb.checked) selection.add(l.k); else selection.delete(l.k);
+            row.classList.toggle('sel', cb.checked);
+            lotArme = false;
+            majBarre();
+        };
+        const info = el('div', 'info');
+        info.appendChild(el('div', 'nom', `${c.p} ${l.k}`));
+        info.appendChild(el('div', 'desc', c.txt));
+        const barre = el('div', 'barre');
+        const rempli = document.createElement('span');
+        rempli.style.width = Math.max(2, Math.round(100 * l.t / (total || 1))) + '%';
+        barre.appendChild(rempli);
+        info.appendChild(barre);
+        haut.appendChild(cb); haut.appendChild(info); haut.appendChild(el('div', 'taille', ko(l.t)));
+        row.appendChild(haut);
+
+        const actions = el('div', 'actions');
+        const bVoir = el('button', '', apercus.has(l.k) ? 'Masquer' : 'Voir');
+        bVoir.onclick = () => { if (apercus.has(l.k)) apercus.delete(l.k); else apercus.add(l.k); rendreListe(); };
+        const armee = cleArmee === l.k;
+        const bVider = el('button', armee ? 'arme' : '', armee ? (c.niv === 'vital' ? '⚠️ Sûr ?' : 'Confirmer ?') : 'Vider');
+        bVider.onclick = () => viderUne(l.k);
+        actions.appendChild(bVoir); actions.appendChild(bVider);
+        row.appendChild(actions);
+
+        if (apercus.has(l.k)) {
+            const pre = el('pre', '', l.apercu + (l.len > 400 ? `\n… (${l.len} caractères au total)` : ''));
+            row.appendChild(pre);
+        }
+        zone.appendChild(row);
+    });
+    majBarre();
+}
+
+function majBarre() {
+    const n = selection.size;
+    const btn = document.getElementById('btn-vider');
+    btn.disabled = n === 0 || occupe;
+    if (!n) { btn.textContent = 'Vider la sélection'; return; }
+    let octets = 0, vitaux = 0;
+    selection.forEach(k => {
+        const l = lignes.find(x => x.k === k);
+        if (l) { octets += l.t; if (classer(l).niv === 'vital') vitaux++; }
+    });
+    if (lotArme) btn.textContent = `⚠️ Confirmer : vider ${n} entrée(s)${vitaux ? ` dont ${vitaux} 🔴` : ''} ?`;
+    else btn.textContent = `🗑️ Vider la sélection (${n} · ${ko(octets)})`;
+}
+
+function rendreTout() {
+    rendreResume();
+    rendreListe();
+}
+
+function actualiser() {
+    lire();
+    // une clé disparue ne peut plus être sélectionnée
+    const existantes = new Set(lignes.map(l => l.k));
+    selection.forEach(k => { if (!existantes.has(k)) selection.delete(k); });
+    rendreTout();
+}
+
+// ---------- Sélection ----------
+function cocherNiveau(niv) {
+    lignes.forEach(l => { if (classer(l).niv === niv) selection.add(l.k); });
+    lotArme = false;
+    rendreListe();
+}
+
+function toutDecocher() {
+    selection.clear();
+    lotArme = false;
+    rendreListe();
+}
+
+// ---------- Vidage ----------
+function viderUne(k) {
+    if (occupe) return;
+    if (cleArmee !== k) {
+        cleArmee = k;
+        clearTimeout(timerArme);
+        timerArme = setTimeout(() => { cleArmee = null; rendreListe(); }, 4000);
+        rendreListe();
+        return;
+    }
+    clearTimeout(timerArme);
+    cleArmee = null;
+    try { localStorage.removeItem(k); } catch (e) { journaliser(`Échec de la suppression de « ${k} » : ${e.message}`); }
+    selection.delete(k);
+    apercus.delete(k);
+    journaliser(`🧹 « ${k} » supprimée`);
+    actualiser();
+}
+
+async function viderSelection() {
+    if (occupe || !selection.size) return;
+    if (!lotArme) {
+        lotArme = true;
+        clearTimeout(timerLot);
+        timerLot = setTimeout(() => { lotArme = false; majBarre(); }, 4000);
+        majBarre();
+        return;
+    }
+    clearTimeout(timerLot);
+    lotArme = false;
+    occupe = true;
+    majBarre();
+    const cles = [...selection];
+    let faits = 0, echecs = 0;
+    for (const k of cles) {
+        try { localStorage.removeItem(k); journaliser(`🧹 « ${k} » supprimée`); }
+        catch (e) { echecs++; journaliser(`Échec de la suppression de « ${k} » : ${e.message}`); }
+        faits++;
+        majProgression(`${faits} traitée(s) / ${cles.length - faits} restante(s) sur ${cles.length}`);
+        await tick();
+    }
+    selection.clear();
+    occupe = false;
+    majProgression(`✅ Terminé : ${faits} traitée(s), ${echecs} échec(s).`);
+    actualiser();
+}
+
+// ---------- Mesure de la place libre ----------
+async function mesurerLibre() {
+    if (occupe) return;
+    occupe = true;
+    majBarre();
+    const btn = document.getElementById('btn-mesure');
+    btn.disabled = true;
+    const ETAPES = 24;
+    let bas = 0, haut = 12000000;      // en caractères
+    for (let i = 1; i <= ETAPES; i++) {
+        const milieu = Math.floor((bas + haut) / 2);
+        let ok = false;
+        try { localStorage.setItem(CLE_MESURE, 'x'.repeat(milieu)); ok = true; } catch (e) { /* plein */ }
+        try { localStorage.removeItem(CLE_MESURE); } catch (e) { /* rien */ }
+        if (ok) bas = milieu; else haut = milieu;
+        majProgression(`Mesure de la place libre : étape ${i}/${ETAPES} (${ETAPES - i} restante(s))`);
+        await tick();
+    }
+    libreOctets = bas * 2;
+    journaliser(`📏 Place libre mesurée : ≈ ${ko(libreOctets)}`);
+    majProgression('');
+    btn.disabled = false;
+    occupe = false;
+    actualiser();
+}
+
+// ---------- Historique ----------
+function ouvrirHistorique() {
+    const z = document.getElementById('histo-liste');
+    z.innerHTML = '';
+    HISTORIQUE.forEach(h => {
+        const d = el('div', 'version');
+        const b = document.createElement('b'); b.textContent = 'v' + h.v;
+        d.appendChild(b);
+        d.appendChild(document.createElement('br'));
+        d.appendChild(document.createTextNode(h.d));
+        z.appendChild(d);
+    });
+    document.getElementById('histo').style.display = 'flex';
+}
+function fermerHistorique() { document.getElementById('histo').style.display = 'none'; }
+
+// ---------- Démarrage ----------
+document.getElementById('ver').textContent = 'v' + APP_VERSION;
+actualiser();
+journaliser(`Inventaire : ${lignes.length} entrée(s), ≈ ${ko(total)}`);
+</script>
 </body>
 </html>

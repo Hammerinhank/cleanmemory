@@ -64,6 +64,9 @@
         margin: 6px 0 0; padding: 8px; background: #f7f9fa; border-radius: 6px; font-size: 0.72rem;
         white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto;
     }
+    .form-depot { margin-top: 6px; padding: 8px; background: #fef9e7; border-radius: 8px; }
+    .form-depot input { width: 100%; padding: 9px; border: 1px solid #ccd1d6; border-radius: 8px; font-size: 16px; margin: 4px 0 6px; }
+    .form-depot .btns .btn { padding: 9px 10px; font-size: 0.82rem; }
     #barre-action {
         position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; background: #fff; border-top: 1px solid #d5d9dd;
         padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px); box-shadow: 0 -2px 8px rgba(0,0,0,0.12);
@@ -144,8 +147,9 @@
 </div>
 
 <script>
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const HISTORIQUE = [
+    { v: '1.1.0', d: "Bouton « 🚀 Lancer » par ligne : ouvre l'app propriétaire de la clé via la Passerelle (adresse de la Passerelle + nom du dépôt). Le dépôt est déduit du nom de la clé quand il y figure, sinon saisi une fois avec « ✏️ Dépôt » et mémorisé." },
     { v: '1.0.0', d: "Création : inventaire de la mémoire locale (localStorage) partagée avec la Passerelle, classement par niveau de risque, aperçu des valeurs, vidage à l'unité ou par sélection avec décompte de progression, bandeau d'état (test d'écriture) et mesure de la place libre." }
 ];
 
@@ -153,6 +157,37 @@ const HISTORIQUE = [
 const CLES_SURES = ['gist_ops_log', 'vocab_journal_ia', 'gemini_quota_usage', 'vocab_modeles_gemini', 'vocab_delais_gemini'];
 const CLES_VITALES = ['vocab_counters', 'vocab_current_section', 'vocab_section_changed_at'];
 const CLE_TEST = '__nettoyage_test_ecriture';
+
+// ---------- Lancement via la Passerelle ----------
+// URL de lancement = adresse de la Passerelle + nom du dépôt (ex. « Hammerinhank/deployer »).
+// Si la Passerelle attend un autre format (ex. « ?repo=… »), il suffit de modifier cette fonction.
+const PASSERELLE_BASE = 'https://hammerinhank.github.io/passerelle/';
+function urlLancement(depot) { return PASSERELLE_BASE + encodeURI(depot); }
+
+const CLE_ASSOC = 'nettoyage_assoc_depots';   // mémorise « clé du stockage → dépôt de l'app »
+let associations = {};
+let formCle = null;                            // clé dont le formulaire « dépôt » est ouvert
+let saisieDepot = '';
+
+function chargerAssoc() {
+    try { associations = JSON.parse(localStorage.getItem(CLE_ASSOC) || '{}') || {}; } catch (e) { associations = {}; }
+}
+function sauverAssoc() {
+    try { localStorage.setItem(CLE_ASSOC, JSON.stringify(associations)); return true; }
+    catch (e) { journaliser('⚠️ Association non mémorisée (mémoire pleine) : valable jusqu\'à la fermeture de la page'); return false; }
+}
+// Dépôt de l'app propriétaire d'une clé : association choisie, sinon motif « propriétaire/dépôt » présent dans le nom de la clé.
+function deduireDepot(k) {
+    if (associations[k]) return associations[k];
+    const m = k.match(/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/);
+    return m ? m[0] : null;
+}
+function lancerDepot(depot) {
+    const url = urlLancement(depot);
+    journaliser(`🚀 Lancement de « ${depot} » via la Passerelle`);
+    try { window.top.location.href = url; return; } catch (e) { /* cadre protégé : on ouvre autrement */ }
+    if (!window.open(url, '_blank')) window.location.href = url;
+}
 const CLE_MESURE = '__nettoyage_mesure';
 
 let lignes = [];            // [{k, t, len, debut, apercu}]
@@ -282,7 +317,8 @@ function rendreListe() {
         };
         const info = el('div', 'info');
         info.appendChild(el('div', 'nom', `${c.p} ${l.k}`));
-        info.appendChild(el('div', 'desc', c.txt));
+        const depot = deduireDepot(l.k);
+        info.appendChild(el('div', 'desc', c.txt + (depot ? ` · ↗ ${depot}` : '')));
         const barre = el('div', 'barre');
         const rempli = document.createElement('span');
         rempli.style.width = Math.max(2, Math.round(100 * l.t / (total || 1))) + '%';
@@ -297,8 +333,36 @@ function rendreListe() {
         const armee = cleArmee === l.k;
         const bVider = el('button', armee ? 'arme' : '', armee ? (c.niv === 'vital' ? '⚠️ Sûr ?' : 'Confirmer ?') : 'Vider');
         bVider.onclick = () => viderUne(l.k);
-        actions.appendChild(bVoir); actions.appendChild(bVider);
+        const bLancer = el('button', '', '🚀 Lancer');
+        bLancer.onclick = () => {
+            const d = deduireDepot(l.k);
+            if (d) lancerDepot(d); else ouvrirFormDepot(l.k);
+        };
+        const bDepot = el('button', '', '✏️ Dépôt');
+        bDepot.onclick = () => ouvrirFormDepot(l.k);
+        actions.appendChild(bVoir); actions.appendChild(bVider); actions.appendChild(bLancer); actions.appendChild(bDepot);
         row.appendChild(actions);
+
+        if (formCle === l.k) {
+            const f = el('div', 'form-depot');
+            f.appendChild(el('div', 'muted', 'Dépôt de l\'app qui utilise cette clé (tel que dans la Passerelle) :'));
+            const inp = document.createElement('input');
+            inp.type = 'text'; inp.placeholder = 'Hammerinhank/nom-du-depot';
+            inp.autocapitalize = 'off'; inp.autocomplete = 'off'; inp.spellcheck = false;
+            inp.value = saisieDepot;
+            inp.oninput = () => { saisieDepot = inp.value; };
+            f.appendChild(inp);
+            const bt = el('div', 'btns');
+            const ok = el('button', 'btn vert', '💾 Enregistrer et lancer');
+            ok.onclick = () => validerFormDepot(l.k, true);
+            const ok2 = el('button', 'btn', '💾 Enregistrer');
+            ok2.onclick = () => validerFormDepot(l.k, false);
+            const non = el('button', 'btn gris', 'Annuler');
+            non.onclick = () => { formCle = null; rendreListe(); };
+            bt.appendChild(ok); bt.appendChild(ok2); bt.appendChild(non);
+            f.appendChild(bt);
+            row.appendChild(f);
+        }
 
         if (apercus.has(l.k)) {
             const pre = el('pre', '', l.apercu + (l.len > 400 ? `\n… (${l.len} caractères au total)` : ''));
@@ -334,6 +398,27 @@ function actualiser() {
     const existantes = new Set(lignes.map(l => l.k));
     selection.forEach(k => { if (!existantes.has(k)) selection.delete(k); });
     rendreTout();
+}
+
+// ---------- Association clé → dépôt ----------
+function ouvrirFormDepot(k) {
+    formCle = k;
+    saisieDepot = associations[k] || deduireDepot(k) || 'Hammerinhank/';
+    rendreListe();
+}
+function validerFormDepot(k, lancer) {
+    const d = saisieDepot.trim().replace(/^\/+|\/+$/g, '');
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(d)) {
+        majProgression('⚠️ Format attendu : propriétaire/dépôt (ex. Hammerinhank/deployer)');
+        return;
+    }
+    associations[k] = d;
+    sauverAssoc();
+    journaliser(`✏️ « ${k} » associée au dépôt « ${d} »`);
+    formCle = null;
+    majProgression('');
+    actualiser();
+    if (lancer) lancerDepot(d);
 }
 
 // ---------- Sélection ----------
@@ -440,6 +525,7 @@ function fermerHistorique() { document.getElementById('histo').style.display = '
 
 // ---------- Démarrage ----------
 document.getElementById('ver').textContent = 'v' + APP_VERSION;
+chargerAssoc();
 actualiser();
 journaliser(`Inventaire : ${lignes.length} entrée(s), ≈ ${ko(total)}`);
 </script>

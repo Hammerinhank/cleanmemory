@@ -148,8 +148,9 @@
 </div>
 
 <script>
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const HISTORIQUE = [
+    { v: '1.2.1', d: "Lecture exacte de la liste des applications du Déployeur (clé « deployer_cibles » : dépôt + libellé, propriétaire pris dans « deployer_config »), libellé affiché à côté du dépôt ; les clés du Déployeur sont classées 🔴. Le balayage générique reste en secours." },
     { v: '1.2.0', d: "Les dépôts sont lus dans les données du Déployeur (liste de cibles du localStorage) : proposés en liste de suggestions dans « ✏️ Dépôt » et utilisés pour déduire automatiquement le dépôt d'une clé dont le nom contient celui d'un dépôt connu (affiché « déduit »)." },
     { v: '1.1.0', d: "Bouton « 🚀 Lancer » par ligne : ouvre l'app propriétaire de la clé via la Passerelle (adresse de la Passerelle + nom du dépôt). Le dépôt est déduit du nom de la clé quand il y figure, sinon saisi une fois avec « ✏️ Dépôt » et mémorisé." },
     { v: '1.0.0', d: "Création : inventaire de la mémoire locale (localStorage) partagée avec la Passerelle, classement par niveau de risque, aperçu des valeurs, vidage à l'unité ou par sélection avec décompte de progression, bandeau d'état (test d'écriture) et mesure de la place libre." }
@@ -157,7 +158,7 @@ const HISTORIQUE = [
 
 // ---------- Connaissances sur les clés ----------
 const CLES_SURES = ['gist_ops_log', 'vocab_journal_ia', 'gemini_quota_usage', 'vocab_modeles_gemini', 'vocab_delais_gemini'];
-const CLES_VITALES = ['vocab_counters', 'vocab_current_section', 'vocab_section_changed_at'];
+const CLES_VITALES = ['vocab_counters', 'vocab_current_section', 'vocab_section_changed_at', 'deployer_cibles', 'deployer_sync', 'deployer_derniere_cible'];
 const CLE_TEST = '__nettoyage_test_ecriture';
 
 // ---------- Lancement via la Passerelle ----------
@@ -196,7 +197,39 @@ function normaliserDepot(valeur) {
     return null;
 }
 
+// Lecture exacte : le Déployeur enregistre « deployer_cibles » = { cibles: [ { name, repo, coche } ], derniereCible, maj }
+// (« repo » = nom du dépôt seul) et « deployer_config » = { user, token } (propriétaire des dépôts).
+let libellesDepots = {};     // « propriétaire/dépôt » → première ligne du libellé donné dans le Déployeur
+function lireDeployeurExact() {
+    try {
+        const brut = localStorage.getItem('deployer_cibles');
+        if (!brut) return null;
+        const d = JSON.parse(brut);
+        const cibles = Array.isArray(d) ? d : (d && Array.isArray(d.cibles) ? d.cibles : null);
+        if (!cibles) return null;
+        let user = PROPRIETAIRE_DEFAUT;
+        try { const c = JSON.parse(localStorage.getItem('deployer_config') || '{}'); if (c && typeof c.user === 'string' && c.user.trim()) user = c.user.trim(); } catch (e) { /* défaut */ }
+        const res = [];
+        cibles.forEach(c => {
+            if (!c || typeof c.repo !== 'string' || !c.repo.trim()) return;
+            const repo = c.repo.trim();
+            const depot = repo.includes('/') ? repo : `${user}/${repo}`;
+            const nom = typeof c.name === 'string' ? c.name.split('\n')[0].trim() : '';
+            res.push({ depot, nom });
+        });
+        return res.length ? res : null;
+    } catch (e) { return null; }
+}
+
 function chercherDepotsDeployeur() {
+    libellesDepots = {};
+    const exact = lireDeployeurExact();
+    if (exact) {
+        exact.forEach(x => { if (x.nom) libellesDepots[x.depot] = x.nom; });
+        depotsConnus = [...new Set(exact.map(x => x.depot))].sort((a, b) => a.localeCompare(b));
+        sourcesDepots = ['deployer_cibles'];
+        return;
+    }
     const trouves = new Set();
     const sources = [];
     const CHAMPS_DEPOT = ['depot', 'dépôt', 'repo', 'repository', 'nomDepot', 'full_name'];
@@ -391,7 +424,7 @@ function rendreListe() {
         const info = el('div', 'info');
         info.appendChild(el('div', 'nom', `${c.p} ${l.k}`));
         const det = detailDepot(l.k);
-        info.appendChild(el('div', 'desc', c.txt + (det ? ` · ↗ ${det.d}${det.o === 'déduit' ? ' (déduit)' : ''}` : '')));
+        info.appendChild(el('div', 'desc', c.txt + (det ? ` · ↗ ${det.d}${libellesDepots[det.d] ? ' — ' + libellesDepots[det.d] : ''}${det.o === 'déduit' ? ' (déduit)' : ''}` : '')));
         const barre = el('div', 'barre');
         const rempli = document.createElement('span');
         rempli.style.width = Math.max(2, Math.round(100 * l.t / (total || 1))) + '%';
@@ -427,7 +460,7 @@ function rendreListe() {
                 inp.setAttribute('list', 'liste-depots');
                 const dl = document.createElement('datalist');
                 dl.id = 'liste-depots';
-                depotsConnus.forEach(d => { const o = document.createElement('option'); o.value = d; dl.appendChild(o); });
+                depotsConnus.forEach(d => { const o = document.createElement('option'); o.value = d; if (libellesDepots[d]) o.label = libellesDepots[d]; dl.appendChild(o); });
                 f.appendChild(dl);
             }
             inp.oninput = () => { saisieDepot = inp.value; };

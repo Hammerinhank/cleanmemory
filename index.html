@@ -170,8 +170,9 @@
 </div>
 
 <script>
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 const HISTORIQUE = [
+    { v: '1.5.0', d: "Dans la fenêtre de contrôle du presse-papier, bouton « ✏️ Remplir les dépôts des clés » : pour chaque clé du stockage local, le dépôt de l'application qui la déclare (liste « cles » du JSON) est enregistré comme association, exactement comme si on l'avait saisi dans le champ « Dépôt de l'app qui utilise cette clé ». Les clés partagées par plusieurs applications (ex. gemini_api_key) sont laissées de côté, ainsi que les associations choisies à la main." },
     { v: '1.4.0', d: "Bouton « 📋 Vérifier le presse-papier » : lit le presse-papier, contrôle que son contenu a la structure du fichier d'inventaire (maj, utilisateur, applications avec application, depot, cles, cles_dynamiques, erreur). Message d'erreur détaillé en cas de non-conformité, sinon liste des applications avec leur dépôt." },
     { v: '1.3.0', d: "Correction du lancement : la Passerelle attend « ?depot=propriétaire/dépôt » (et « &fichier= » si l'app n'est pas index.html), pas un chemin. La liste des apps (dépôt + fichier) est lue directement dans la base de la Passerelle (IndexedDB « passerelle »), complétée par le Déployeur. La déduction utilise aussi le nom du fichier de l'app ; une association peut valoir pour tout un groupe de clés (même préfixe, ex. « vocab_ ») et s'oublie." },
     { v: '1.2.1', d: "Lecture exacte de la liste des applications du Déployeur (clé « deployer_cibles » : dépôt + libellé, propriétaire pris dans « deployer_config »), libellé affiché à côté du dépôt ; les clés du Déployeur sont classées 🔴. Le balayage générique reste en secours." },
@@ -802,6 +803,45 @@ function controlerStructure(texte) {
     return { err, data };
 }
 
+let derniereVerif = null;   // dernières données du presse-papier reconnues conformes
+
+// Associe à chaque clé du stockage local le dépôt de l'application qui la déclare dans « cles ».
+// Clés déclarées par plusieurs dépôts : ambiguës, ignorées. Associations manuelles : conservées.
+function remplirDepotsDepuisPressePapier() {
+    const z = document.getElementById('verif-resultat');
+    z.innerHTML = '';
+    if (!derniereVerif) { z.appendChild(el('div', 'msg-ko', 'Aucune donnée conforme à utiliser.')); return; }
+    const proprio = (derniereVerif.utilisateur || '').trim() || PROPRIETAIRE_DEFAUT;
+    const parCle = {};   // clé → ensemble de dépôts
+    derniereVerif.applications.forEach(a => {
+        const d = a.depot.trim().replace(/^\/+|\/+$/g, '');
+        const depot = d.indexOf('/') >= 0 ? d : proprio + '/' + d;
+        a.cles.forEach(k => { if (!k) return; (parCle[k] = parCle[k] || new Set()).add(depot); });
+    });
+    let faites = 0, conservees = 0, absentes = 0;
+    const ambigues = [];
+    lignes.forEach(l => {
+        const ds = parCle[l.k];
+        if (!ds) { absentes++; return; }
+        if (ds.size > 1) { ambigues.push(l.k); return; }
+        const x = detailDepot(l.k);
+        if (x && (x.o === 'choisi' || x.o === 'préfixe')) { conservees++; return; }
+        associations[l.k] = [...ds][0];
+        faites++;
+    });
+    if (faites) sauverAssoc();
+    if (formCle) saisieDepot = deduireDepot(formCle) || saisieDepot;
+    journaliser(`✏️ Dépôts remplis depuis le presse-papier : ${faites} clé(s) associée(s), ${conservees} conservée(s), ${ambigues.length} ambiguë(s)`);
+    actualiser();
+    const m = el('div', 'msg-ok', `✅ ${faites} clé(s) associée(s) à leur dépôt`);
+    const det = [];
+    if (conservees) det.push(conservees + ' déjà associée(s) à la main (conservée(s))');
+    if (ambigues.length) det.push(ambigues.length + ' partagée(s) par plusieurs applications, ignorée(s) : ' + ambigues.slice(0, 10).join(', ') + (ambigues.length > 10 ? '…' : ''));
+    if (absentes) det.push(absentes + ' clé(s) du stockage absente(s) du JSON');
+    if (det.length) m.appendChild(el('small', '', det.join(' · ')));
+    z.appendChild(m);
+}
+
 function afficherVerif(texte) {
     const z = document.getElementById('verif-corps');
     z.innerHTML = '';
@@ -820,6 +860,12 @@ function afficherVerif(texte) {
     const m = el('div', 'msg-ok', '✅ Structure conforme — ' + apps.length + ' application(s)');
     m.appendChild(el('small', '', 'Utilisateur : ' + r.data.utilisateur + ' · Mise à jour : ' + new Date(r.data.maj).toLocaleString('fr-FR')));
     z.appendChild(m);
+    derniereVerif = r.data;
+    const bRempl = el('button', 'btn', '✏️ Remplir les dépôts des clés');
+    bRempl.style.cssText = 'margin:0 0 8px; width:100%;';
+    bRempl.onclick = remplirDepotsDepuisPressePapier;
+    z.appendChild(bRempl);
+    z.appendChild(Object.assign(el('div'), { id: 'verif-resultat' }));
     apps.forEach(a => {
         const l = el('div', 'app-ligne');
         l.appendChild(el('span', 'a', a.application));

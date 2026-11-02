@@ -96,6 +96,7 @@
         <div id="resume"></div>
         <div class="jauge" id="jauge" style="display:none;"><span id="jauge-rempli"></span></div>
         <div class="muted" id="contexte"></div>
+        <div class="muted" id="depots-info" style="margin-top:4px;"></div>
         <div class="btns" style="margin-top:10px;">
             <button class="btn" onclick="actualiser()">🔄 Actualiser</button>
             <button class="btn gris" onclick="mesurerLibre()" id="btn-mesure">📏 Mesurer la place libre</button>
@@ -147,8 +148,9 @@
 </div>
 
 <script>
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const HISTORIQUE = [
+    { v: '1.2.0', d: "Les dépôts sont lus dans les données du Déployeur (liste de cibles du localStorage) : proposés en liste de suggestions dans « ✏️ Dépôt » et utilisés pour déduire automatiquement le dépôt d'une clé dont le nom contient celui d'un dépôt connu (affiché « déduit »)." },
     { v: '1.1.0', d: "Bouton « 🚀 Lancer » par ligne : ouvre l'app propriétaire de la clé via la Passerelle (adresse de la Passerelle + nom du dépôt). Le dépôt est déduit du nom de la clé quand il y figure, sinon saisi une fois avec « ✏️ Dépôt » et mémorisé." },
     { v: '1.0.0', d: "Création : inventaire de la mémoire locale (localStorage) partagée avec la Passerelle, classement par niveau de risque, aperçu des valeurs, vidage à l'unité ou par sélection avec décompte de progression, bandeau d'état (test d'écriture) et mesure de la place libre." }
 ];
@@ -176,12 +178,80 @@ function sauverAssoc() {
     try { localStorage.setItem(CLE_ASSOC, JSON.stringify(associations)); return true; }
     catch (e) { journaliser('⚠️ Association non mémorisée (mémoire pleine) : valable jusqu\'à la fermeture de la page'); return false; }
 }
-// Dépôt de l'app propriétaire d'une clé : association choisie, sinon motif « propriétaire/dépôt » présent dans le nom de la clé.
-function deduireDepot(k) {
-    if (associations[k]) return associations[k];
-    const m = k.match(/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/);
-    return m ? m[0] : null;
+// ---- Dépôts connus : lus dans les données du Déployeur, stockées dans la même mémoire locale ----
+// Le Déployeur garde la liste de ses « cibles » (un objet par dépôt, avec un champ « depot ») dans le localStorage.
+// On repère donc toute liste JSON d'objets portant un nom de dépôt, sans supposer le nom exact de la clé qui la contient.
+const PROPRIETAIRE_DEFAUT = 'Hammerinhank';
+let depotsConnus = [];       // ['Hammerinhank/vignettes', ...]
+let sourcesDepots = [];      // clés du stockage d'où viennent ces dépôts
+
+function normaliserDepot(valeur) {
+    if (typeof valeur !== 'string') return null;
+    let v = valeur.trim();
+    const u = v.match(/github\.com\/([\w.-]+\/[\w.-]+)/i);
+    if (u) v = u[1];
+    v = v.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+    if (/^[\w.-]+\/[\w.-]+$/.test(v)) return v;
+    if (/^[\w.-]+$/.test(v)) return PROPRIETAIRE_DEFAUT + '/' + v;
+    return null;
 }
+
+function chercherDepotsDeployeur() {
+    const trouves = new Set();
+    const sources = [];
+    const CHAMPS_DEPOT = ['depot', 'dépôt', 'repo', 'repository', 'nomDepot', 'full_name'];
+    const CHAMPS_AUTRES = ['coche', 'libelle', 'label', 'nom', 'name', 'fichier', 'html', 'url', 'commentaire'];
+    const analyser = (valeur, profondeur, acc) => {
+        if (profondeur > 3 || valeur === null || typeof valeur !== 'object') return;
+        if (Array.isArray(valeur)) {
+            valeur.slice(0, 500).forEach(it => {
+                if (it && typeof it === 'object' && !Array.isArray(it)) {
+                    const champ = CHAMPS_DEPOT.find(c => typeof it[c] === 'string');
+                    if (champ && CHAMPS_AUTRES.some(c => c in it)) {
+                        const d = normaliserDepot(it[champ]);
+                        if (d) acc.push(d);
+                    } else analyser(it, profondeur + 1, acc);
+                }
+            });
+        } else {
+            Object.keys(valeur).slice(0, 50).forEach(c => analyser(valeur[c], profondeur + 1, acc));
+        }
+    };
+    lignes.forEach(l => {
+        if (l.k === CLE_ASSOC || l.len > 1500000) return;
+        if (!/^[\[{]/.test(l.debut)) return;
+        try {
+            const data = JSON.parse(localStorage.getItem(l.k));
+            const acc = [];
+            analyser(data, 0, acc);
+            if (acc.length >= 2) { acc.forEach(d => trouves.add(d)); sources.push(l.k); }
+        } catch (e) { /* pas du JSON exploitable */ }
+    });
+    depotsConnus = [...trouves].sort((a, b) => a.localeCompare(b));
+    sourcesDepots = sources;
+}
+
+// Dépôt de l'app propriétaire d'une clé, et d'où vient l'information :
+// « choisi » (association faite à la main) > « clé » (motif propriétaire/dépôt dans le nom) > « déduit » (nom d'un dépôt connu retrouvé dans le nom de la clé).
+function detailDepot(k) {
+    if (associations[k]) return { d: associations[k], o: 'choisi' };
+    const m = k.match(/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/);
+    if (m) return { d: m[0], o: 'clé' };
+    const nk = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Plusieurs dépôts peuvent figurer dans le nom (ex. « passerelle_app_vignettes ») : on retient celui qui apparaît
+    // en dernier (la Passerelle préfixe la clé, l'app visée vient après), et à égalité le plus long.
+    let meilleur = null, fin = -1, longueur = 0;
+    depotsConnus.forEach(d => {
+        const nr = d.split('/')[1].toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (nr.length < 4) return;
+        const i = nk.lastIndexOf(nr);
+        if (i < 0) return;
+        const f = i + nr.length;
+        if (f > fin || (f === fin && nr.length > longueur)) { meilleur = d; fin = f; longueur = nr.length; }
+    });
+    return meilleur ? { d: meilleur, o: 'déduit' } : null;
+}
+function deduireDepot(k) { const x = detailDepot(k); return x ? x.d : null; }
 function lancerDepot(depot) {
     const url = urlLancement(depot);
     journaliser(`🚀 Lancement de « ${depot} » via la Passerelle`);
@@ -288,6 +358,9 @@ function rendreResume() {
     try { ctx = (window.self !== window.top) ? 'Lancée dans la Passerelle (mémoire partagée avec les autres apps).' : 'Page autonome (mémoire de ce site).'; }
     catch (e) { ctx = 'Lancée dans un cadre (mémoire partagée).'; }
     document.getElementById('contexte').textContent = ctx;
+    document.getElementById('depots-info').textContent = depotsConnus.length
+        ? `Dépôts connus (lus dans les données du Déployeur) : ${depotsConnus.length}${sourcesDepots.length ? ' — clé « ' + sourcesDepots.join(', ') + ' »' : ''}.`
+        : "Aucune liste de dépôts du Déployeur trouvée dans cette mémoire : saisis le dépôt à la main avec « ✏️ Dépôt ».";
 }
 
 function rendreListe() {
@@ -317,8 +390,8 @@ function rendreListe() {
         };
         const info = el('div', 'info');
         info.appendChild(el('div', 'nom', `${c.p} ${l.k}`));
-        const depot = deduireDepot(l.k);
-        info.appendChild(el('div', 'desc', c.txt + (depot ? ` · ↗ ${depot}` : '')));
+        const det = detailDepot(l.k);
+        info.appendChild(el('div', 'desc', c.txt + (det ? ` · ↗ ${det.d}${det.o === 'déduit' ? ' (déduit)' : ''}` : '')));
         const barre = el('div', 'barre');
         const rempli = document.createElement('span');
         rempli.style.width = Math.max(2, Math.round(100 * l.t / (total || 1))) + '%';
@@ -350,6 +423,13 @@ function rendreListe() {
             inp.type = 'text'; inp.placeholder = 'Hammerinhank/nom-du-depot';
             inp.autocapitalize = 'off'; inp.autocomplete = 'off'; inp.spellcheck = false;
             inp.value = saisieDepot;
+            if (depotsConnus.length) {
+                inp.setAttribute('list', 'liste-depots');
+                const dl = document.createElement('datalist');
+                dl.id = 'liste-depots';
+                depotsConnus.forEach(d => { const o = document.createElement('option'); o.value = d; dl.appendChild(o); });
+                f.appendChild(dl);
+            }
             inp.oninput = () => { saisieDepot = inp.value; };
             f.appendChild(inp);
             const bt = el('div', 'btns');
@@ -394,6 +474,7 @@ function rendreTout() {
 
 function actualiser() {
     lire();
+    chercherDepotsDeployeur();
     // une clé disparue ne peut plus être sélectionnée
     const existantes = new Set(lignes.map(l => l.k));
     selection.forEach(k => { if (!existantes.has(k)) selection.delete(k); });

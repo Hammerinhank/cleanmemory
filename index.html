@@ -98,7 +98,7 @@
         <div class="muted" id="contexte"></div>
         <div class="muted" id="depots-info" style="margin-top:4px;"></div>
         <div class="btns" style="margin-top:10px;">
-            <button class="btn" onclick="actualiser()">🔄 Actualiser</button>
+            <button class="btn" onclick="actualiserComplet()">🔄 Actualiser</button>
             <button class="btn gris" onclick="mesurerLibre()" id="btn-mesure">📏 Mesurer la place libre</button>
         </div>
     </div>
@@ -148,8 +148,9 @@
 </div>
 
 <script>
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 const HISTORIQUE = [
+    { v: '1.3.0', d: "Correction du lancement : la Passerelle attend « ?depot=propriétaire/dépôt » (et « &fichier= » si l'app n'est pas index.html), pas un chemin. La liste des apps (dépôt + fichier) est lue directement dans la base de la Passerelle (IndexedDB « passerelle »), complétée par le Déployeur. La déduction utilise aussi le nom du fichier de l'app ; une association peut valoir pour tout un groupe de clés (même préfixe, ex. « vocab_ ») et s'oublie." },
     { v: '1.2.1', d: "Lecture exacte de la liste des applications du Déployeur (clé « deployer_cibles » : dépôt + libellé, propriétaire pris dans « deployer_config »), libellé affiché à côté du dépôt ; les clés du Déployeur sont classées 🔴. Le balayage générique reste en secours." },
     { v: '1.2.0', d: "Les dépôts sont lus dans les données du Déployeur (liste de cibles du localStorage) : proposés en liste de suggestions dans « ✏️ Dépôt » et utilisés pour déduire automatiquement le dépôt d'une clé dont le nom contient celui d'un dépôt connu (affiché « déduit »)." },
     { v: '1.1.0', d: "Bouton « 🚀 Lancer » par ligne : ouvre l'app propriétaire de la clé via la Passerelle (adresse de la Passerelle + nom du dépôt). Le dépôt est déduit du nom de la clé quand il y figure, sinon saisi une fois avec « ✏️ Dépôt » et mémorisé." },
@@ -162,15 +163,19 @@ const CLES_VITALES = ['vocab_counters', 'vocab_current_section', 'vocab_section_
 const CLE_TEST = '__nettoyage_test_ecriture';
 
 // ---------- Lancement via la Passerelle ----------
-// URL de lancement = adresse de la Passerelle + nom du dépôt (ex. « Hammerinhank/deployer »).
-// Si la Passerelle attend un autre format (ex. « ?repo=… »), il suffit de modifier cette fonction.
+// Formes de lancement direct acceptées par la Passerelle (fonction lireCible de passerelle-app.html) :
+//   ?depot=vignettes  |  ?vignettes  |  #vignettes  |  ?depot=compte/dépôt&fichier=page.html
+// On utilise la forme complète « ?depot=propriétaire/dépôt », avec « &fichier= » quand l'app n'est pas index.html.
 const PASSERELLE_BASE = 'https://hammerinhank.github.io/passerelle/';
-function urlLancement(depot) { return PASSERELLE_BASE + encodeURI(depot); }
+function urlLancement(depot, fichier) {
+    return PASSERELLE_BASE + '?depot=' + encodeURIComponent(depot) + (fichier ? '&fichier=' + encodeURIComponent(fichier) : '');
+}
 
 const CLE_ASSOC = 'nettoyage_assoc_depots';   // mémorise « clé du stockage → dépôt de l'app »
 let associations = {};
 let formCle = null;                            // clé dont le formulaire « dépôt » est ouvert
 let saisieDepot = '';
+let saisiePrefixe = false;                     // case « toutes les clés du même groupe » cochée
 
 function chargerAssoc() {
     try { associations = JSON.parse(localStorage.getItem(CLE_ASSOC) || '{}') || {}; } catch (e) { associations = {}; }
@@ -221,15 +226,7 @@ function lireDeployeurExact() {
     } catch (e) { return null; }
 }
 
-function chercherDepotsDeployeur() {
-    libellesDepots = {};
-    const exact = lireDeployeurExact();
-    if (exact) {
-        exact.forEach(x => { if (x.nom) libellesDepots[x.depot] = x.nom; });
-        depotsConnus = [...new Set(exact.map(x => x.depot))].sort((a, b) => a.localeCompare(b));
-        sourcesDepots = ['deployer_cibles'];
-        return;
-    }
+function balayageGenerique() {
     const trouves = new Set();
     const sources = [];
     const CHAMPS_DEPOT = ['depot', 'dépôt', 'repo', 'repository', 'nomDepot', 'full_name'];
@@ -260,34 +257,120 @@ function chercherDepotsDeployeur() {
             if (acc.length >= 2) { acc.forEach(d => trouves.add(d)); sources.push(l.k); }
         } catch (e) { /* pas du JSON exploitable */ }
     });
-    depotsConnus = [...trouves].sort((a, b) => a.localeCompare(b));
-    sourcesDepots = sources;
+    return { depots: [...trouves].sort((a, b) => a.localeCompare(b)), sources };
 }
 
-// Dépôt de l'app propriétaire d'une clé, et d'où vient l'information :
-// « choisi » (association faite à la main) > « clé » (motif propriétaire/dépôt dans le nom) > « déduit » (nom d'un dépôt connu retrouvé dans le nom de la clé).
+// ---- Liste des apps de la Passerelle : lue dans sa base IndexedDB « passerelle » (magasin « kv », clé « passerelle_apps ») ----
+// Chaque app y est un objet { label, repo: « propriétaire/dépôt », file, icone }. Repli : ancienne copie en localStorage.
+let appsPasserelle = [];      // [{ label, repo, file }]
+let infoPasserelle = '';
+async function chargerAppsPasserelle() {
+    appsPasserelle = []; infoPasserelle = '';
+    let brut = null, source = '';
+    try {
+        // On ne tente l'ouverture que si la base existe déjà : l'ouvrir sans la trouver la créerait vide et gênerait la Passerelle.
+        if (window.indexedDB && indexedDB.databases) {
+            const bases = await indexedDB.databases();
+            if (bases.some(b => b.name === 'passerelle')) {
+                brut = await new Promise((res, rej) => {
+                    const r = indexedDB.open('passerelle');
+                    r.onupgradeneeded = () => { try { r.transaction.abort(); } catch (e) { /* rien */ } };
+                    r.onerror = () => rej(r.error || new Error('ouverture refusée'));
+                    r.onblocked = () => rej(new Error('ouverture bloquée'));
+                    r.onsuccess = () => {
+                        const db = r.result;
+                        try {
+                            if (!db.objectStoreNames.contains('kv')) { db.close(); res(null); return; }
+                            const g = db.transaction('kv', 'readonly').objectStore('kv').get('passerelle_apps');
+                            g.onsuccess = () => { db.close(); res(typeof g.result === 'string' ? g.result : null); };
+                            g.onerror = () => { db.close(); rej(g.error || new Error('lecture refusée')); };
+                        } catch (e) { try { db.close(); } catch (e2) { /* rien */ } rej(e); }
+                    };
+                });
+                if (brut) source = 'IndexedDB';
+            }
+        }
+    } catch (e) { journaliser('Lecture de la liste des apps de la Passerelle (IndexedDB) impossible : ' + e.message); }
+    if (!brut) { try { brut = localStorage.getItem('passerelle_apps'); if (brut) source = 'localStorage'; } catch (e) { /* rien */ } }
+    if (!brut) return;
+    try {
+        const a = JSON.parse(brut);
+        if (!Array.isArray(a)) return;
+        appsPasserelle = a.filter(x => x && typeof x.repo === 'string' && typeof x.file === 'string')
+                          .map(x => ({ label: typeof x.label === 'string' ? x.label : '', repo: x.repo, file: x.file }));
+        infoPasserelle = source;
+        journaliser(`Liste des apps de la Passerelle lue (${source}) : ${appsPasserelle.length} app(s)`);
+    } catch (e) { journaliser('Liste des apps de la Passerelle illisible : ' + e.message); }
+}
+
+// Consolidation : apps de la Passerelle (avec leur fichier), complétées par les cibles du Déployeur, sinon balayage générique.
+let appsConnues = [];         // [{ depot, fichier, label }]
+function chercherDepotsDeployeur() {
+    libellesDepots = {};
+    sourcesDepots = [];
+    const liste = [];
+    appsPasserelle.forEach(a => liste.push({ depot: a.repo.includes('/') ? a.repo : PROPRIETAIRE_DEFAUT + '/' + a.repo, fichier: a.file, label: a.label }));
+    if (appsPasserelle.length) sourcesDepots.push(`Passerelle (${infoPasserelle})`);
+    const exact = lireDeployeurExact();
+    if (exact) {
+        sourcesDepots.push('Déployeur (deployer_cibles)');
+        exact.forEach(x => { if (!liste.some(y => y.depot.toLowerCase() === x.depot.toLowerCase())) liste.push({ depot: x.depot, fichier: '', label: x.nom }); });
+    }
+    if (!liste.length) {
+        const g = balayageGenerique();
+        g.depots.forEach(d => liste.push({ depot: d, fichier: '', label: '' }));
+        sourcesDepots = g.sources;
+    }
+    appsConnues = liste;
+    depotsConnus = [...new Set(liste.map(x => x.depot))].sort((a, b) => a.localeCompare(b));
+    liste.forEach(x => { if (x.label && !libellesDepots[x.depot]) libellesDepots[x.depot] = x.label; });
+}
+
+// Fichier à lancer pour un dépôt : « » (= index.html, valeur par défaut de la Passerelle) ou le fichier enregistré dans la Passerelle.
+function fichierPourDepot(depot) {
+    const c = appsConnues.filter(a => a.fichier && a.depot.toLowerCase() === String(depot).toLowerCase());
+    if (!c.length || c.some(a => /^index\.html?$/i.test(a.fichier))) return '';
+    return c[0].fichier;
+}
+
+// Préfixe de groupe d'une clé (ex. « vocab_ » pour « vocab_counters »), pour associer d'un coup toutes les clés d'une même app.
+function prefixeDe(k) {
+    const m = k.match(/^[^_:.\-\/]{3,}[_:.\-]/);
+    return m ? m[0] : null;
+}
+
+// Dépôt (et fichier) de l'app propriétaire d'une clé, et d'où vient l'information :
+// « choisi » (association manuelle, par clé) > « préfixe » (association manuelle valable pour un groupe de clés)
+// > « clé » (motif propriétaire/dépôt dans le nom) > « déduit » (nom d'un dépôt ou d'un fichier connu retrouvé dans le nom de la clé).
 function detailDepot(k) {
-    if (associations[k]) return { d: associations[k], o: 'choisi' };
+    if (associations[k]) return { d: associations[k], f: fichierPourDepot(associations[k]), o: 'choisi' };
+    let pref = null;
+    Object.keys(associations).forEach(c => { if (c.indexOf('pref:') === 0 && k.indexOf(c.slice(5)) === 0 && (!pref || c.length > pref.length)) pref = c; });
+    if (pref) return { d: associations[pref], f: fichierPourDepot(associations[pref]), o: 'préfixe' };
     const m = k.match(/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/);
-    if (m) return { d: m[0], o: 'clé' };
+    if (m) return { d: m[0], f: fichierPourDepot(m[0]), o: 'clé' };
     const nk = k.toLowerCase().replace(/[^a-z0-9]/g, '');
-    // Plusieurs dépôts peuvent figurer dans le nom (ex. « passerelle_app_vignettes ») : on retient celui qui apparaît
+    // Plusieurs noms peuvent figurer dans la clé (ex. « passerelle_app_vignettes ») : on retient celui qui apparaît
     // en dernier (la Passerelle préfixe la clé, l'app visée vient après), et à égalité le plus long.
     let meilleur = null, fin = -1, longueur = 0;
-    depotsConnus.forEach(d => {
-        const nr = d.split('/')[1].toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (nr.length < 4) return;
-        const i = nk.lastIndexOf(nr);
-        if (i < 0) return;
-        const f = i + nr.length;
-        if (f > fin || (f === fin && nr.length > longueur)) { meilleur = d; fin = f; longueur = nr.length; }
+    appsConnues.forEach(a => {
+        const noms = [a.depot.split('/')[1]];
+        if (a.fichier && !/^index\.html?$/i.test(a.fichier)) noms.push(a.fichier.replace(/\.html?$/i, '').split('/').pop());
+        noms.forEach(n => {
+            const nr = n.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (nr.length < 4) return;
+            const i = nk.lastIndexOf(nr);
+            if (i < 0) return;
+            const f = i + nr.length;
+            if (f > fin || (f === fin && nr.length > longueur)) { meilleur = a; fin = f; longueur = nr.length; }
+        });
     });
-    return meilleur ? { d: meilleur, o: 'déduit' } : null;
+    return meilleur ? { d: meilleur.depot, f: /^index\.html?$/i.test(meilleur.fichier) ? '' : meilleur.fichier, o: 'déduit' } : null;
 }
 function deduireDepot(k) { const x = detailDepot(k); return x ? x.d : null; }
-function lancerDepot(depot) {
-    const url = urlLancement(depot);
-    journaliser(`🚀 Lancement de « ${depot} » via la Passerelle`);
+function lancerDepot(depot, fichier) {
+    const url = urlLancement(depot, fichier);
+    journaliser(`🚀 Lancement de « ${depot}${fichier ? ' › ' + fichier : ''} » via la Passerelle`);
     try { window.top.location.href = url; return; } catch (e) { /* cadre protégé : on ouvre autrement */ }
     if (!window.open(url, '_blank')) window.location.href = url;
 }
@@ -392,8 +475,8 @@ function rendreResume() {
     catch (e) { ctx = 'Lancée dans un cadre (mémoire partagée).'; }
     document.getElementById('contexte').textContent = ctx;
     document.getElementById('depots-info').textContent = depotsConnus.length
-        ? `Dépôts connus (lus dans les données du Déployeur) : ${depotsConnus.length}${sourcesDepots.length ? ' — clé « ' + sourcesDepots.join(', ') + ' »' : ''}.`
-        : "Aucune liste de dépôts du Déployeur trouvée dans cette mémoire : saisis le dépôt à la main avec « ✏️ Dépôt ».";
+        ? `Apps connues : ${depotsConnus.length} dépôt(s) — source : ${sourcesDepots.join(' + ')}.`
+        : "Aucune liste d'apps trouvée (ni dans la Passerelle, ni dans le Déployeur) : saisis le dépôt à la main avec « ✏️ Dépôt ».";
 }
 
 function rendreListe() {
@@ -424,7 +507,7 @@ function rendreListe() {
         const info = el('div', 'info');
         info.appendChild(el('div', 'nom', `${c.p} ${l.k}`));
         const det = detailDepot(l.k);
-        info.appendChild(el('div', 'desc', c.txt + (det ? ` · ↗ ${det.d}${libellesDepots[det.d] ? ' — ' + libellesDepots[det.d] : ''}${det.o === 'déduit' ? ' (déduit)' : ''}` : '')));
+        info.appendChild(el('div', 'desc', c.txt + (det ? ` · ↗ ${det.d}${det.f ? ' › ' + det.f : ''}${libellesDepots[det.d] ? ' — ' + libellesDepots[det.d] : ''}${det.o === 'déduit' ? ' (déduit)' : (det.o === 'préfixe' ? ' (groupe)' : '')}` : '')));
         const barre = el('div', 'barre');
         const rempli = document.createElement('span');
         rempli.style.width = Math.max(2, Math.round(100 * l.t / (total || 1))) + '%';
@@ -441,8 +524,8 @@ function rendreListe() {
         bVider.onclick = () => viderUne(l.k);
         const bLancer = el('button', '', '🚀 Lancer');
         bLancer.onclick = () => {
-            const d = deduireDepot(l.k);
-            if (d) lancerDepot(d); else ouvrirFormDepot(l.k);
+            const x = detailDepot(l.k);
+            if (x) lancerDepot(x.d, x.f); else ouvrirFormDepot(l.k);
         };
         const bDepot = el('button', '', '✏️ Dépôt');
         bDepot.onclick = () => ouvrirFormDepot(l.k);
@@ -465,6 +548,17 @@ function rendreListe() {
             }
             inp.oninput = () => { saisieDepot = inp.value; };
             f.appendChild(inp);
+            const pf = prefixeDe(l.k);
+            if (pf) {
+                const lab = document.createElement('label');
+                lab.style.cssText = 'display:flex; gap:8px; align-items:center; font-size:0.8rem; margin-bottom:6px;';
+                const cbp = document.createElement('input');
+                cbp.type = 'checkbox'; cbp.checked = saisiePrefixe; cbp.style.cssText = 'width:20px; height:20px; flex:none;';
+                cbp.onchange = () => { saisiePrefixe = cbp.checked; };
+                lab.appendChild(cbp);
+                lab.appendChild(document.createTextNode(`Appliquer à toutes les clés commençant par « ${pf} »`));
+                f.appendChild(lab);
+            }
             const bt = el('div', 'btns');
             const ok = el('button', 'btn vert', '💾 Enregistrer et lancer');
             ok.onclick = () => validerFormDepot(l.k, true);
@@ -472,7 +566,14 @@ function rendreListe() {
             ok2.onclick = () => validerFormDepot(l.k, false);
             const non = el('button', 'btn gris', 'Annuler');
             non.onclick = () => { formCle = null; rendreListe(); };
-            bt.appendChild(ok); bt.appendChild(ok2); bt.appendChild(non);
+            bt.appendChild(ok); bt.appendChild(ok2);
+            const dejaAssocie = detailDepot(l.k);
+            if (dejaAssocie && (dejaAssocie.o === 'choisi' || dejaAssocie.o === 'préfixe')) {
+                const oubli = el('button', 'btn rouge', '↩️ Oublier l\'association');
+                oubli.onclick = () => oublierAssociation(l.k);
+                bt.appendChild(oubli);
+            }
+            bt.appendChild(non);
             f.appendChild(bt);
             row.appendChild(f);
         }
@@ -505,6 +606,11 @@ function rendreTout() {
     rendreListe();
 }
 
+async function actualiserComplet() {
+    await chargerAppsPasserelle();
+    actualiser();
+}
+
 function actualiser() {
     lire();
     chercherDepotsDeployeur();
@@ -517,7 +623,8 @@ function actualiser() {
 // ---------- Association clé → dépôt ----------
 function ouvrirFormDepot(k) {
     formCle = k;
-    saisieDepot = associations[k] || deduireDepot(k) || 'Hammerinhank/';
+    saisieDepot = deduireDepot(k) || 'Hammerinhank/';
+    saisiePrefixe = false;
     rendreListe();
 }
 function validerFormDepot(k, lancer) {
@@ -526,13 +633,25 @@ function validerFormDepot(k, lancer) {
         majProgression('⚠️ Format attendu : propriétaire/dépôt (ex. Hammerinhank/deployer)');
         return;
     }
-    associations[k] = d;
+    const pf = saisiePrefixe ? prefixeDe(k) : null;
+    if (pf) { associations['pref:' + pf] = d; journaliser(`✏️ Clés « ${pf}… » associées au dépôt « ${d} »`); }
+    else { associations[k] = d; journaliser(`✏️ « ${k} » associée au dépôt « ${d} »`); }
     sauverAssoc();
-    journaliser(`✏️ « ${k} » associée au dépôt « ${d} »`);
     formCle = null;
     majProgression('');
     actualiser();
-    if (lancer) lancerDepot(d);
+    if (lancer) lancerDepot(d, fichierPourDepot(d));
+}
+function oublierAssociation(k) {
+    const x = detailDepot(k);
+    if (x && x.o === 'choisi') delete associations[k];
+    else if (x && x.o === 'préfixe') {
+        Object.keys(associations).forEach(c => { if (c.indexOf('pref:') === 0 && k.indexOf(c.slice(5)) === 0) delete associations[c]; });
+    }
+    sauverAssoc();
+    journaliser(`↩️ Association oubliée pour « ${k} »`);
+    formCle = null;
+    actualiser();
 }
 
 // ---------- Sélection ----------
@@ -642,6 +761,7 @@ document.getElementById('ver').textContent = 'v' + APP_VERSION;
 chargerAssoc();
 actualiser();
 journaliser(`Inventaire : ${lignes.length} entrée(s), ≈ ${ko(total)}`);
+chargerAppsPasserelle().then(() => actualiser());
 </script>
 </body>
 </html>
